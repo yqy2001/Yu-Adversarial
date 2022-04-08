@@ -1,6 +1,9 @@
 from __future__ import print_function
 import os
 import argparse
+import pickle
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,11 +16,13 @@ from models.resnet import *
 from trades import trades_loss
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR TRADES Adversarial Training')
+parser.add_argument('--name', type=str, default='TRADES_CIFAR10')
+
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 128)')
 parser.add_argument('--test-batch-size', type=int, default=128, metavar='N',
                     help='input batch size for testing (default: 128)')
-parser.add_argument('--epochs', type=int, default=76, metavar='N',
+parser.add_argument('--epochs', type=int, default=100, metavar='N',
                     help='number of epochs to train')
 parser.add_argument('--weight-decay', '--wd', default=2e-4,
                     type=float, metavar='W')
@@ -39,15 +44,21 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--model-dir', default='./model-cifar-wideResNet',
+parser.add_argument('--model-dir', default='./model-cifar-',
                     help='directory of model for saving checkpoint')
 parser.add_argument('--save-freq', '-s', default=1, type=int, metavar='N',
                     help='save frequency')
 
+MODEL_MAP = {"WideResNet": WideResNet, "ResNet18": ResNet18, "ResNet34": ResNet34, "ResNet50": ResNet50}
+parser.add_argument('--model', default="WideResNet", choices=MODEL_MAP.keys(), metavar='N',
+                    help='save frequency')
+
+
 args = parser.parse_args()
 
 # settings
-model_dir = args.model_dir
+args.name += '_' + args.model
+model_dir = args.model_dir + args.model
 if not os.path.exists(model_dir):
     os.makedirs(model_dir)
 use_cuda = not args.no_cuda and torch.cuda.is_available()
@@ -149,28 +160,42 @@ def adjust_learning_rate(optimizer, epoch):
 
 def main():
     # init model, ResNet18() can be also used here for training
-    model = WideResNet().to(device)
+    model = MODEL_MAP[args.model]().to(device)
+    # model = WideResNet().to(device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
+    train_acc, test_acc = [], []
+
     for epoch in range(1, args.epochs + 1):
+        start = time.time()
         # adjust learning rate for SGD
         adjust_learning_rate(optimizer, epoch)
-
         # adversarial training
         train(args, model, device, train_loader, optimizer, epoch)
-
         # evaluation on natural examples
         print('================================================================')
-        eval_train(model, device, train_loader)
-        eval_test(model, device, test_loader)
+        _, train_acc_t = eval_train(model, device, train_loader)
+        _, test_acc_t = eval_test(model, device, test_loader)
+        train_acc.append(train_acc_t)
+        test_acc.append(test_acc_t)
+        end = time.time()
+        print("Time cost: {:.0f} s".format(end-start))
         print('================================================================')
 
         # save checkpoint
         if epoch % args.save_freq == 0:
             torch.save(model.state_dict(),
-                       os.path.join(model_dir, 'model-wideres-epoch{}.pt'.format(epoch)))
+                       os.path.join(model_dir, 'model-{}-epoch{}.pt'.format(args.model, epoch)))
             torch.save(optimizer.state_dict(),
-                       os.path.join(model_dir, 'opt-wideres-checkpoint_epoch{}.tar'.format(epoch)))
+                       os.path.join(model_dir, 'opt-{}-checkpoint_epoch{}.tar'.format(args.model, epoch)))
+
+    acc = [train_acc, test_acc]
+    with open(args.name+'_acc', 'wb') as f:
+        pickle.dump(acc, f)
+
+    # read
+    # with open(args.name + '_acc', 'rb') as f:
+    #     a = pickle.load(f)
 
 
 if __name__ == '__main__':
