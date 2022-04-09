@@ -7,8 +7,10 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
 import torchvision
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
 
 from models.wideresnet import *
@@ -50,9 +52,8 @@ parser.add_argument('--save-freq', '-s', default=1, type=int, metavar='N',
                     help='save frequency')
 
 MODEL_MAP = {"WideResNet": WideResNet, "ResNet18": ResNet18, "ResNet34": ResNet34, "ResNet50": ResNet50}
-parser.add_argument('--model', default="WideResNet", choices=MODEL_MAP.keys(), metavar='N',
+parser.add_argument('--model', default="ResNet18", choices=MODEL_MAP.keys(), metavar='N',
                     help='save frequency')
-
 
 args = parser.parse_args()
 
@@ -66,22 +67,14 @@ torch.manual_seed(args.seed)
 device = torch.device("cuda" if use_cuda else "cpu")
 kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
-# setup data loader
-transform_train = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-])
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-])
-trainset = torchvision.datasets.CIFAR10(root='/data', train=True, download=True, transform=transform_train)
-train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, **kwargs)
-testset = torchvision.datasets.CIFAR10(root='/data', train=False, download=True, transform=transform_test)
-test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, **kwargs)
+writer = SummaryWriter("tblogs/"+args.name)
+
+batch_i = 1
 
 
 def train(args, model, device, train_loader, optimizer, epoch):
+    global batch_i
+
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -106,43 +99,94 @@ def train(args, model, device, train_loader, optimizer, epoch):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader), loss.item()))
 
+        writer.add_scalar('Loss/train_rob', loss, batch_i)
+        batch_i += 1
 
-def eval_train(model, device, train_loader):
+
+def eval_natural(model, device, data_loader, eval_type):
+    assert eval_type in ["train", "test"], "eval_type must be train or test"
+
     model.eval()
-    train_loss = 0
+    loss = 0
     correct = 0
     with torch.no_grad():
-        for data, target in train_loader:
+        for data, target in data_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            train_loss += F.cross_entropy(output, target, size_average=False).item()
+            loss += F.cross_entropy(output, target, size_average=False).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()
-    train_loss /= len(train_loader.dataset)
-    print('Training: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)'.format(
-        train_loss, correct, len(train_loader.dataset),
-        100. * correct / len(train_loader.dataset)))
-    training_accuracy = correct / len(train_loader.dataset)
-    return train_loss, training_accuracy
+    loss /= len(data_loader.dataset)
+    print('{}: Average loss: {:.2f}, Accuracy: {}/{} ({:.0f}%)'.format(
+        eval_type, loss, correct, len(data_loader.dataset),
+        100. * correct / len(data_loader.dataset)))
+    accuracy = correct / len(data_loader.dataset)
+    return loss, accuracy
 
 
-def eval_test(model, device, test_loader):
+def eval_adv_whitebox(model, device, data_loader, eval_type):
+    """
+    evaluate model by white-box attack
+    """
+    global batch_i
+    assert eval_type in ["train", "test"], "eval_type must be train or test"
+
     model.eval()
-    test_loss = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += F.cross_entropy(output, target, size_average=False).item()
-            pred = output.max(1, keepdim=True)[1]
-            correct += pred.eq(target.view_as(pred)).sum().item()
-    test_loss /= len(test_loader.dataset)
-    print('Test: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)'.format(
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
-    test_accuracy = correct / len(test_loader.dataset)
-    return test_loss, test_accuracy
+    robust_err_total = 0
+    natural_err_total = 0
+
+    for data, target in data_loader:
+        data, target = data.to(device), target.to(device)
+        # pgd attack
+        X, y = Variable(data, requires_grad=True), Variable(target)
+        err_natural, err_robust, rob_loss = _pgd_whitebox(model, X, y)
+        natural_err_total += err_natural
+        robust_err_total += err_robust
+
+        if eval_type == "test":
+            writer.add_scalar('Loss/test_rob', rob_loss, batch_i)
+            batch_i += 1
+
+    print('{}: Accuracy: {}/{} ({:.0f}%)'.format(
+        eval_type + '-natural', len(data_loader.dataset) - natural_err_total, len(data_loader.dataset),
+        100. * (len(data_loader.dataset) - natural_err_total) / len(data_loader.dataset)))
+    print('{}: Accuracy: {}/{} ({:.0f}%)'.format(
+        eval_type + '-robust', len(data_loader.dataset) - robust_err_total, len(data_loader.dataset),
+        100. * (len(data_loader.dataset) - robust_err_total) / len(data_loader.dataset)))
+    natural_acc = 100. * (len(data_loader.dataset) - natural_err_total) / len(data_loader.dataset)
+    robust_acc = 100. * (len(data_loader.dataset) - robust_err_total) / len(data_loader.dataset)
+
+    return natural_acc, robust_acc
+
+
+def _pgd_whitebox(model,
+                  X,
+                  y,
+                  epsilon=args.epsilon,
+                  num_steps=20,
+                  step_size=0.003):
+    out = model(X)
+    err = (out.data.max(1)[1] != y.data).float().sum()
+    X_pgd = Variable(X.data, requires_grad=True)
+    # random restart
+    random_noise = torch.FloatTensor(*X_pgd.shape).uniform_(-epsilon, epsilon).to(device)
+    X_pgd = Variable(X_pgd.data + random_noise, requires_grad=True)
+
+    for _ in range(num_steps):
+        opt = optim.SGD([X_pgd], lr=1e-3)
+        opt.zero_grad()
+
+        with torch.enable_grad():
+            loss = nn.CrossEntropyLoss()(model(X_pgd), y)
+        loss.backward()
+        eta = step_size * X_pgd.grad.data.sign()
+        X_pgd = Variable(X_pgd.data + eta, requires_grad=True)
+        eta = torch.clamp(X_pgd.data - X.data, -epsilon, epsilon)
+        X_pgd = Variable(X.data + eta, requires_grad=True)
+        X_pgd = Variable(torch.clamp(X_pgd, 0, 1.0), requires_grad=True)
+    loss = nn.CrossEntropyLoss()(model(X_pgd), y)
+    err_pgd = (model(X_pgd).data.max(1)[1] != y.data).float().sum()
+    return err, err_pgd, loss
 
 
 def adjust_learning_rate(optimizer, epoch):
@@ -159,12 +203,27 @@ def adjust_learning_rate(optimizer, epoch):
 
 
 def main():
+    global batch_i
+    # setup data loader
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+    ])
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+    trainset = torchvision.datasets.CIFAR10(root='/data', train=True, download=True, transform=transform_train)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, **kwargs)
+    testset = torchvision.datasets.CIFAR10(root='/data', train=False, download=True, transform=transform_test)
+    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, **kwargs)
+
     # init model, ResNet18() can be also used here for training
     model = MODEL_MAP[args.model]().to(device)
     # model = WideResNet().to(device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
-    train_acc, test_acc = [], []
+    train_nat_acc_total, train_rob_acc_total, test_nat_acc_total, test_rob_acc_total = [], [], [], []
 
     for epoch in range(1, args.epochs + 1):
         start = time.time()
@@ -172,14 +231,24 @@ def main():
         adjust_learning_rate(optimizer, epoch)
         # adversarial training
         train(args, model, device, train_loader, optimizer, epoch)
-        # evaluation on natural examples
+        batch_i = 1
+        # evaluation on natural & robust examples
         print('================================================================')
-        _, train_acc_t = eval_train(model, device, train_loader)
-        _, test_acc_t = eval_test(model, device, test_loader)
-        train_acc.append(train_acc_t)
-        test_acc.append(test_acc_t)
+        # train_natual_acc, train_rob_acc = eval_natural(model, device, train_loader, "train")
+        # test_natual_acc, test_rob_acc = eval_natural(model, device, test_loader, "test")
+        train_natual_acc, train_rob_acc = eval_adv_whitebox(model, device, train_loader, "train")
+        test_natual_acc, test_rob_acc = eval_adv_whitebox(model, device, test_loader, "test")
+
+        writer.add_scalar('Accuracy/train_nat', train_natual_acc, epoch)
+        writer.add_scalar('Accuracy/train_rob', train_rob_acc, epoch)
+        writer.add_scalar('Accuracy/test_nat', test_natual_acc, epoch)
+        writer.add_scalar('Accuracy/test_rob', test_rob_acc, epoch)
+        # train_nat_acc_total.append(train_natual_acc)
+        # train_rob_acc_total.append(train_rob_acc)
+        # test_nat_acc_total.append(test_natual_acc)
+        # test_rob_acc_total.append(test_rob_acc)
         end = time.time()
-        print("Time cost: {:.0f} s".format(end-start))
+        print("Time cost: {:.0f} s".format(end - start))
         print('================================================================')
 
         # save checkpoint
@@ -189,8 +258,8 @@ def main():
             torch.save(optimizer.state_dict(),
                        os.path.join(model_dir, 'opt-{}-checkpoint_epoch{}.tar'.format(args.model, epoch)))
 
-    acc = [train_acc, test_acc]
-    with open(args.name+'_acc', 'wb') as f:
+    acc = [train_nat_acc_total, train_rob_acc_total, test_nat_acc_total, test_rob_acc_total]
+    with open(args.name + '_acc', 'wb') as f:
         pickle.dump(acc, f)
 
     # read
