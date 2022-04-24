@@ -252,11 +252,11 @@ def main():
         print('================================================================')
 
         # save checkpoint
-        if epoch % args.save_freq == 0:
-            torch.save(model.state_dict(),
-                       os.path.join(model_dir, 'model-{}-epoch{}.pt'.format(args.model, epoch)))
-            torch.save(optimizer.state_dict(),
-                       os.path.join(model_dir, 'opt-{}-checkpoint_epoch{}.tar'.format(args.model, epoch)))
+        # if epoch % args.save_freq == 0:
+        #     torch.save(model.state_dict(),
+        #                os.path.join(model_dir, 'model-{}-epoch{}.pt'.format(args.model, epoch)))
+        #     torch.save(optimizer.state_dict(),
+        #                os.path.join(model_dir, 'opt-{}-checkpoint_epoch{}.tar'.format(args.model, epoch)))
 
     acc = [train_nat_acc_total, train_rob_acc_total, test_nat_acc_total, test_rob_acc_total]
     with open(args.name + '_acc', 'wb') as f:
