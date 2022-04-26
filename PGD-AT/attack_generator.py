@@ -1,6 +1,7 @@
 import numpy as np
 from models import *
 from torch.autograd import Variable
+from losses import SupConLoss
 
 def cwloss(output, target,confidence=50, num_classes=10):
     # Compute the probability of the label class versus the maximum other
@@ -51,6 +52,65 @@ def GA_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,r
         x_adv = torch.clamp(x_adv, 0.0, 1.0)
     x_adv = Variable(x_adv, requires_grad=False)
     return x_adv #, Kappa
+
+# generate x_cl, x_ce
+def advcl_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,rand_init):
+    data1, data2, data = data
+    model.eval()
+    # Kappa = torch.zeros(len(data))
+    if category == "trades":
+        x_adv = data.detach() + 0.001 * torch.randn(data.shape).cuda().detach() if rand_init else data.detach()
+        nat_output = model(data, bn="normal")
+    if category == "Madry":
+        x_adv_cl = data.detach() + torch.from_numpy(np.random.uniform(-epsilon, epsilon, data.shape)).float().cuda() if rand_init else data.detach()
+        x_adv_cl = torch.clamp(x_adv_cl, 0.0, 1.0)
+
+        x_adv = data.detach() + torch.from_numpy(np.random.uniform(-epsilon, epsilon, data.shape)).float().cuda() if rand_init else data.detach()
+        x_adv = torch.clamp(x_adv, 0.0, 1.0)
+
+    for k in range(num_steps):
+        x_adv_cl.requires_grad_()
+        x_adv.requires_grad_()
+
+        fcl_proj, fcl_logits = model(x_adv_cl, bn_name='pgd', contrast=True)
+        f1_proj, f1_logits = model(data1, bn_name='normal', contrast=True)
+        f2_proj, f2_logits = model(data2, bn_name='normal', contrast=True)
+
+        fce_logits = model(x_adv, bn_name='pgd_ce')
+        
+        model.zero_grad()
+        with torch.enable_grad():
+            if loss_fn == "cent":
+                loss_adv = nn.CrossEntropyLoss(reduction="mean")(fce_logits, target)
+            if loss_fn == "cw":
+                loss_adv = cwloss(fce_logits, target)
+            if loss_fn == "kl":
+                criterion_kl = nn.KLDivLoss(size_average=False).cuda()
+                loss_adv = criterion_kl(F.log_softmax(fce_logits, dim=1),F.softmax(nat_output, dim=1))
+       
+        # add cl loss
+        features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
+        criterion_cl = SupConLoss(temperature=0.5)
+        loss_contrast = criterion_cl(features)
+        
+        loss_adv += loss_contrast
+
+        loss_adv.backward() 
+        eta = step_size * x_adv.grad.sign()
+        # Update adversarial data
+        x_adv = x_adv.detach() + eta
+        x_adv = torch.min(torch.max(x_adv, data - epsilon), data + epsilon)
+        x_adv = torch.clamp(x_adv, 0.0, 1.0)
+
+        eta_cl = step_size * x_adv_cl.grad.sign()
+        # Update adversarial data
+        x_adv_cl = x_adv_cl.detach() + eta_cl
+        x_adv_cl = torch.min(torch.max(x_adv_cl, data - epsilon), data + epsilon)
+        x_adv_cl = torch.clamp(x_adv_cl, 0.0, 1.0)
+
+    x_adv = Variable(x_adv, requires_grad=False)
+    x_adv_cl = Variable(x_adv_cl, requires_grad=False)
+    return x_adv, x_adv_cl
 
 def eval_clean(model, test_loader):
     model.eval()

@@ -4,9 +4,14 @@ import torchvision
 import torch.optim as optim
 from torchvision import transforms
 from models import *
+from models.resnet_cifar_multibn import resnet18 as ResNet18_multibn
+
+from losses import SupConLoss
+
 import numpy as np
 import attack_generator as attack
 from utils import Logger
+from utils.utils import TwoCropTransformAdv
 
 parser = argparse.ArgumentParser(description='PGD-AT')
 parser.add_argument('--epochs', type=int, default=120, metavar='N', help='number of epochs to train')
@@ -28,6 +33,10 @@ parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverg
 parser.add_argument('--lr-max', default=0.1, type=float)
 parser.add_argument('--lr-one-drop', default=0.01, type=float)
 parser.add_argument('--lr-drop-epoch', default=100, type=int)
+
+# adversarial setting
+parser.add_argument('--advcl',action='store_true', default=False,help='whether to use advcl as regulation')
+parser.add_argument('--advcl_weight', default=1.0, type=float)
 
 args = parser.parse_args()
 
@@ -52,8 +61,14 @@ if args.net == "smallcnn":
     model = SmallCNN().cuda()
     net = "smallcnn"
 if args.net == "resnet18":
-    model = ResNet18().cuda()
-    net = "resnet18"
+    if args.advcl:
+        bn_names = ['normal', 'pgd', 'pgd_ce']
+        model = ResNet18_multibn(bn_names=bn_names)
+        model = model.cuda()
+        net = "resnet18_multibn"
+    else:
+        model = ResNet18().cuda()
+        net = "resnet18"
 if args.net == "preactresnet18":
     model = PreActResNet18().cuda()
     net = "preactresnet18"
@@ -118,23 +133,38 @@ def train(epoch, model, train_loader, optimizer):
     num_data = 0
     train_robust_loss = 0
 
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (data_all, target) in enumerate(train_loader):
 
         loss = 0
-        data, target = data.cuda(), target.cuda()
+        data1, data2, data = data_all
+        data1, data2, data, target = data1.cuda(), data2.cuda(), data.cuda(), target.cuda()
         
         # Get adversarial data
-        x_adv = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
+        if args.advcl:
+            x_adv, x_adv_cl = attack.advcl_PGD(model,[data1, data2, data], target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True ) 
+        else:
+            x_adv = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
 
         model.train()
         lr = lr_schedule(epoch + 1)
         optimizer.param_groups[0].update(lr=lr)
         optimizer.zero_grad()
         
-        logit = model(x_adv)
-
+        logit = model(x_adv, bn_name='pgd_ce')
         loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-        print('loss:', loss)
+        
+        if args.advcl:
+            f1_proj, f1_logits = model(data1, bn_name='normal', contrast=True)
+            f2_proj, f2_logits = model(data2, bn_name='normal', contrast=True)
+            fcl_proj, fcl_logits = model(x_adv_cl, bn_name='pgd', contrast=True)
+            features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
+
+            criterion_cl = SupConLoss(temperature=0.5)
+            cl_loss = criterion_cl(features)
+
+            loss = loss + args.advcl_weight*cl_loss
+
+        # print('loss:', loss)
         train_robust_loss += loss.item() * len(x_adv)
         
         loss.backward()
@@ -148,10 +178,21 @@ def train(epoch, model, train_loader, optimizer):
 
 # Setup data loader
 transform_train = transforms.Compose([
+    transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomApply([
+        transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+    ], p=0.8),
+    transforms.RandomGrayscale(p=0.2),
+    transforms.ToTensor(),
+])
+train_transform_org = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
 ])
+transform_train = TwoCropTransformAdv(transform_train, train_transform_org)
+
 transform_test = transforms.Compose([
     transforms.ToTensor(),
 ])
@@ -204,7 +245,10 @@ for epoch in range(start_epoch, args.epochs):
 
     # Evalutions similar to DAT.
     _, test_nat_acc = attack.eval_clean(model, test_loader)
-    _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+    if args.advcl:
+        _, test_pgd20_acc = attack.eval_robust_multibn(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+    else:
+        _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
 
 
     print(
