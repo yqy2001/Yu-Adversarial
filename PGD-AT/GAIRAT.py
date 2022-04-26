@@ -3,6 +3,10 @@ import argparse
 import torchvision
 import torch.optim as optim
 from torchvision import transforms
+import torch.backends.cudnn as cudnn
+
+import apex
+
 from models import *
 from models.resnet_cifar_multibn import resnet18 as ResNet18_multibn
 
@@ -86,7 +90,16 @@ if args.net == "WRN":
     model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
     net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
 
-model = torch.nn.DataParallel(model)
+if torch.cuda.device_count() > 1:
+    print("=====> Let's use", torch.cuda.device_count(), "GPUs!")
+    # model = apex.parallel.convert_syncbn_model(model)
+    model = nn.DataParallel(model)
+    model = model.cuda()
+    cudnn.benchmark = True
+else:
+    print('single gpu version is not supported, please use multiple GPUs!')
+    raise NotImplementedError
+# model = torch.nn.DataParallel(model)
 optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
 
 # Learning schedules
@@ -147,7 +160,7 @@ def train(epoch, model, train_loader, optimizer):
 
         loss = 0
         data1, data2, data = data_all
-        data1, data2, data, target = data1.cuda(), data2.cuda(), data.cuda(), target.cuda()
+        data1, data2, data, target = data1.cuda(non_blocking=True), data2.cuda(non_blocking=True), data.cuda(non_blocking=True), target.cuda(non_blocking=True)
         
         # Get adversarial data
         if args.advcl:

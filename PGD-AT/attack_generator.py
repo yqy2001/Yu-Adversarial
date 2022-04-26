@@ -151,7 +151,7 @@ def eval_robust_multibn(model, test_loader, perturb_steps, epsilon, step_size, l
         for data, target in test_loader:
             data, target = data.cuda(), target.cuda()
             x_adv = GA_PGD(model,data,target,epsilon,step_size,perturb_steps,loss_fn,category,rand_init=random)
-            output = model(x_adv, bn="pgd_ce")
+            output = model(x_adv, bn_name="pgd_ce")
             test_loss += F.cross_entropy(output, target, size_average=False).item()
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum().item()

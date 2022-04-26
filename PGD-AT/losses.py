@@ -8,12 +8,11 @@ class SupConLoss(nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
     def __init__(self, temperature=0.07, contrast_mode='all',
-                 base_temperature=0.07, args=None):
+                 base_temperature=0.07):
         super(SupConLoss, self).__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
-        self.args  = args
 
     def forward(self, features, labels=None, mask=None, alpha=None):
         """Compute loss for model. If both `labels` and `mask` are None,
@@ -71,14 +70,7 @@ class SupConLoss(nn.Module):
         logits = anchor_dot_contrast - logits_max.detach()
 
         # tile mask
-        if self.args.only_clean:
-            mask_unsup = torch.eye(batch_size, dtype=torch.float32).to(device)
-            mask_unsup = mask_unsup.repeat(anchor_count, contrast_count)
-            mask = mask.repeat(anchor_count, contrast_count)
-            mask_unsup[batch_size:, batch_size:] = mask[batch_size:, batch_size:]
-            mask = mask_unsup
-        else:
-            mask = mask.repeat(anchor_count, contrast_count)
+        mask = mask.repeat(anchor_count, contrast_count)
         # mask-out self-contrast cases
         logits_mask = torch.scatter(
             torch.ones_like(mask),
