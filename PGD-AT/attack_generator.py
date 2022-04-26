@@ -143,3 +143,18 @@ def eval_robust(model, test_loader, perturb_steps, epsilon, step_size, loss_fn, 
     test_accuracy = correct / len(test_loader.dataset)
     return test_loss, test_accuracy
 
+def eval_robust_multibn(model, test_loader, perturb_steps, epsilon, step_size, loss_fn, category, random):
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.enable_grad():
+        for data, target in test_loader:
+            data, target = data.cuda(), target.cuda()
+            x_adv = GA_PGD(model,data,target,epsilon,step_size,perturb_steps,loss_fn,category,rand_init=random)
+            output = model(x_adv, bn="pgd_ce")
+            test_loss += F.cross_entropy(output, target, size_average=False).item()
+            pred = output.max(1, keepdim=True)[1]
+            correct += pred.eq(target.view_as(pred)).sum().item()
+    test_loss /= len(test_loader.dataset)
+    test_accuracy = correct / len(test_loader.dataset)
+    return test_loss, test_accuracy

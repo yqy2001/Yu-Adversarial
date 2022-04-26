@@ -38,6 +38,16 @@ parser.add_argument('--lr-drop-epoch', default=100, type=int)
 parser.add_argument('--advcl',action='store_true', default=False,help='whether to use advcl as regulation')
 parser.add_argument('--advcl_weight', default=1.0, type=float)
 
+# acc_aware
+parser.add_argument('--acc_aware', action='store_true',
+                    help='using adv probablity to reweight loss')
+parser.add_argument('--beta_cl', type=float, default=1.0,
+                        help='beta in pow() of p(f(x_adv)==y)')
+parser.add_argument('--lambd_cl', type=float, default=1.0,
+                    help='coefficient in cl')
+parser.add_argument('--temp_cl', type=float, default=10.0,
+                    help='temp to calculate alpha')
+
 args = parser.parse_args()
 
 # Training settings
@@ -151,7 +161,23 @@ def train(epoch, model, train_loader, optimizer):
         optimizer.zero_grad()
         
         logit = model(x_adv, bn_name='pgd_ce')
-        loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
+
+        p_adv_y = None
+        if args.acc_aware: 
+            # ======== compute p(model(x_ce)==y) ========
+            p_adv_y = torch.ones(len(data)).cuda()
+            lgt_sfm = F.softmax(logit/args.temp_cl, dim=1)
+            for pp in range(len(logit)):
+                L = lgt_sfm[pp][target[pp].item()]
+                L = L.pow(args.beta_cl).detach()
+                p_adv_y[pp] = L
+            
+            ce_loss = nn.CrossEntropyLoss(reduce="none")(logit, target)
+            ce_loss = ce_loss.mul(1 - p_adv_y)
+            ce_loss = ce_loss.mean()
+            loss = ce_loss
+        else:
+            loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
         
         if args.advcl:
             f1_proj, f1_logits = model(data1, bn_name='normal', contrast=True)
@@ -160,7 +186,7 @@ def train(epoch, model, train_loader, optimizer):
             features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
 
             criterion_cl = SupConLoss(temperature=0.5)
-            cl_loss = criterion_cl(features)
+            cl_loss = criterion_cl(features, alpha=p_adv_y)
 
             loss = loss + args.advcl_weight*cl_loss
 
