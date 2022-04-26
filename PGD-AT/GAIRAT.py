@@ -4,12 +4,11 @@ import torchvision
 import torch.optim as optim
 from torchvision import transforms
 from models import *
-from GAIR import GAIR
 import numpy as np
 import attack_generator as attack
 from utils import Logger
 
-parser = argparse.ArgumentParser(description='GAIRAT: Geometry-aware instance-dependent adversarial training')
+parser = argparse.ArgumentParser(description='PGD-AT')
 parser.add_argument('--epochs', type=int, default=120, metavar='N', help='number of epochs to train')
 parser.add_argument('--weight-decay', '--wd', default=2e-4, type=float, metavar='W')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='SGD momentum')
@@ -29,11 +28,7 @@ parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverg
 parser.add_argument('--lr-max', default=0.1, type=float)
 parser.add_argument('--lr-one-drop', default=0.01, type=float)
 parser.add_argument('--lr-drop-epoch', default=100, type=int)
-parser.add_argument('--Lambda',type=str, default='-1.0', help='parameter for GAIR')
-parser.add_argument('--Lambda_max',type=float, default=float('inf'), help='max Lambda')
-parser.add_argument('--Lambda_schedule', default='fixed', choices=['linear', 'piecewise', 'fixed'])
-parser.add_argument('--weight_assignment_function', default='Tanh', choices=['Discrete','Sigmoid','Tanh'])
-parser.add_argument('--begin_epoch', type=int, default=60, help='when to use GAIR')
+
 args = parser.parse_args()
 
 # Training settings
@@ -117,7 +112,7 @@ def save_checkpoint(state, checkpoint=out_dir, filename='checkpoint.pth.tar'):
     torch.save(state, filepath)
 
 # Get adversarially robust network
-def train(epoch, model, train_loader, optimizer, Lambda):
+def train(epoch, model, train_loader, optimizer):
     
     lr = 0
     num_data = 0
@@ -128,8 +123,8 @@ def train(epoch, model, train_loader, optimizer, Lambda):
         loss = 0
         data, target = data.cuda(), target.cuda()
         
-        # Get adversarial data and geometry value
-        x_adv, Kappa = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
+        # Get adversarial data
+        x_adv = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
 
         model.train()
         lr = lr_schedule(epoch + 1)
@@ -138,15 +133,8 @@ def train(epoch, model, train_loader, optimizer, Lambda):
         
         logit = model(x_adv)
 
-        if (epoch + 1) >= args.begin_epoch:
-            Kappa = Kappa.cuda()
-            loss = nn.CrossEntropyLoss(reduce=False)(logit, target)
-            # Calculate weight assignment according to geometry value
-            normalized_reweight = GAIR(args.num_steps, Kappa, Lambda, args.weight_assignment_function)
-            loss = loss.mul(normalized_reweight).mean()
-        else:
-            loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
-        
+        loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
+        print('loss:', loss)
         train_robust_loss += loss.item() * len(x_adv)
         
         loss.backward()
@@ -157,41 +145,6 @@ def train(epoch, model, train_loader, optimizer, Lambda):
     train_robust_loss = train_robust_loss / num_data
 
     return train_robust_loss, lr
-
-# Adjust lambda for weight assignment using epoch
-def adjust_Lambda(epoch):
-    Lam = float(args.Lambda)
-    if args.epochs >= 110:
-        # Train Wide-ResNet
-        Lambda = args.Lambda_max
-        if args.Lambda_schedule == 'linear':
-            if epoch >= 60:
-                Lambda = args.Lambda_max - (epoch/args.epochs) * (args.Lambda_max - Lam)
-        elif args.Lambda_schedule == 'piecewise':
-            if epoch >= 60:
-                Lambda = Lam
-            elif epoch >= 90:
-                Lambda = Lam-1.0
-            elif epoch >= 110:
-                Lambda = Lam-1.5
-        elif args.Lambda_schedule == 'fixed':
-            if epoch >= 60:
-                Lambda = Lam
-    else:
-        # Train ResNet
-        Lambda = args.Lambda_max
-        if args.Lambda_schedule == 'linear':
-            if epoch >= 30:
-                Lambda = args.Lambda_max - (epoch/args.epochs) * (args.Lambda_max - Lam)
-        elif args.Lambda_schedule == 'piecewise':
-            if epoch >= 30:
-                Lambda = Lam
-            elif epoch >= 60:
-                Lambda = Lam-2.0
-        elif args.Lambda_schedule == 'fixed':
-            if epoch >= 30:
-                Lambda = Lam
-    return Lambda
 
 # Setup data loader
 transform_train = transforms.Compose([
@@ -220,12 +173,12 @@ if args.dataset == "mnist":
     test_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=1,pin_memory=True)
 
 # Resume 
-title = 'GAIRAT'
+title = 'PGD-AT'
 best_acc = 0
 start_epoch = 0
 if resume:
     # Resume directly point to checkpoint.pth.tar
-    print ('==> GAIRAT Resuming from checkpoint ..')
+    print ('==> PGD-AT Resuming from checkpoint ..')
     print(resume)
     assert os.path.isfile(resume)
     out_dir = os.path.dirname(resume)
@@ -236,7 +189,7 @@ if resume:
     optimizer.load_state_dict(checkpoint['optimizer'])
     logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title, resume=True)
 else:
-    print('==> GAIRAT')
+    print('==> PGD-AT')
     logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title)
     logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD20 Acc'])
 
@@ -245,12 +198,9 @@ test_nat_acc = 0
 test_pgd20_acc = 0
 
 for epoch in range(start_epoch, args.epochs):
-    
-    # Get lambda
-    Lambda = adjust_Lambda(epoch + 1)
-    
+   
     # Adversarial training
-    train_robust_loss, lr = train(epoch, model, train_loader, optimizer, Lambda)
+    train_robust_loss, lr = train(epoch, model, train_loader, optimizer)
 
     # Evalutions similar to DAT.
     _, test_nat_acc = attack.eval_clean(model, test_loader)
