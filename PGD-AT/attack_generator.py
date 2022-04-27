@@ -56,16 +56,22 @@ def GA_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,r
 # generate x_cl, x_ce
 def advcl_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,category,rand_init):
     data1, data2, data = data
-    model.eval()
+    data = data.detach()
+    data1 = data1.clone().detach()
+    data2 = data2.clone().detach()
+    x_adv_cl = data.clone().detach()
+    x_adv = data.clone().detach()
+
+    # model.eval()
     # Kappa = torch.zeros(len(data))
     if category == "trades":
-        x_adv = data.detach() + 0.001 * torch.randn(data.shape).cuda().detach() if rand_init else data.detach()
+        x_adv = x_adv.detach() + 0.001 * torch.randn(data.shape).cuda().detach() if rand_init else x_adv.detach()
         nat_output = model(data, bn="normal")
     if category == "Madry":
-        x_adv_cl = data.detach() + torch.from_numpy(np.random.uniform(-epsilon, epsilon, data.shape)).float().cuda() if rand_init else data.detach()
+        x_adv_cl = x_adv_cl.detach() + torch.from_numpy(np.random.uniform(-epsilon, epsilon, data.shape)).float().cuda() if rand_init else x_adv_cl.detach()
         x_adv_cl = torch.clamp(x_adv_cl, 0.0, 1.0)
 
-        x_adv = data.detach() + torch.from_numpy(np.random.uniform(-epsilon, epsilon, data.shape)).float().cuda() if rand_init else data.detach()
+        x_adv = x_adv.detach() + torch.from_numpy(np.random.uniform(-epsilon, epsilon, data.shape)).float().cuda() if rand_init else x_adv.detach()
         x_adv = torch.clamp(x_adv, 0.0, 1.0)
 
     for k in range(num_steps):
@@ -93,16 +99,18 @@ def advcl_PGD(model, data, target, epsilon, step_size, num_steps,loss_fn,categor
         criterion_cl = SupConLoss(temperature=0.5)
         loss_contrast = criterion_cl(features)
         
-        loss_adv += loss_contrast
+        loss = loss_adv + loss_contrast
 
-        loss_adv.backward() 
-        eta = step_size * x_adv.grad.sign()
+        grad_x_cl, grad_x_ce = torch.autograd.grad(loss, [x_adv_cl, x_adv])
+        # loss_all.backward()
+
+        eta = step_size * grad_x_ce.sign()
         # Update adversarial data
         x_adv = x_adv.detach() + eta
         x_adv = torch.min(torch.max(x_adv, data - epsilon), data + epsilon)
         x_adv = torch.clamp(x_adv, 0.0, 1.0)
 
-        eta_cl = step_size * x_adv_cl.grad.sign()
+        eta_cl = step_size * grad_x_cl.sign()
         # Update adversarial data
         x_adv_cl = x_adv_cl.detach() + eta_cl
         x_adv_cl = torch.min(torch.max(x_adv_cl, data - epsilon), data + epsilon)
