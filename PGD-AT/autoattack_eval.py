@@ -5,16 +5,21 @@ import torch.nn as nn
 import torchvision.datasets as datasets
 import torch.utils.data as data
 import torchvision.transforms as transforms
-from wideresnet import *
+# from wideresnet import *
+from models import *
+# from models.resnet_cifar import ResNet18 as ResNet18_multibn
+from models.resnet_cifar_multibn import resnet18 as ResNet18_multibn
+from utils.utils import load_BN_checkpoint
 
 import sys
 sys.path.insert(0, '..')
 
-from resnet import *
+# from resnet import *
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='~/dataset/cifar-10')
+    parser.add_argument('--model_type', default='resnet18', choices=['resnet18', 'resnet18_multibn'])
+    parser.add_argument('--data_dir', type=str, default='~/data')
     parser.add_argument('--norm', type=str, default='Linf')
     parser.add_argument('--epsilon', type=float, default=8./255.)
     parser.add_argument('--model', type=str, default='./model_test.pt')
@@ -29,11 +34,27 @@ if __name__ == '__main__':
 
     # load model
     
-    model = WideResNet().cuda()
+    if args.model_type == "resnet18":
+        model = ResNet18().cuda()
+    elif args.model_type == "resnet18_multibn":
+        bn_names = ['normal', 'pgd', 'pgd_ce']
+        model = ResNet18_multibn(bn_names=bn_names)
+        model = model.cuda()
+        
+    # elif args.model_type == "WideResNet":
+    #     model = WideResNet().cuda()
+    
     model = nn.DataParallel(model)
     ckpt = torch.load(args.model)
+    # if args.model_type == "resnet18_multibn":
+    #     state_dict = ckpt['state_dict']
+    #     state_dict, _ = load_BN_checkpoint(state_dict)
+    #     model.load_state_dict(state_dict, strict=False)
+    #     model.load_state_dict(state_dict)
+    # else:
+    #     model.load_state_dict(ckpt['state_dict'])
     model.load_state_dict(ckpt['state_dict'])
-    
+
     model.cuda()
     model.eval()
     '''
