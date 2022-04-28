@@ -43,6 +43,7 @@ parser.add_argument('--random',type=bool,default=True,help="whether to initiat a
 
 # model
 parser.add_argument('--net', type=str, default="WRN",help="decide which network to use,choose from smallcnn,resnet18,WRN")
+parser.add_argument('--multibn', action='store_true', default=False)
 parser.add_argument('--depth',type=int,default=32,help='WRN depth')
 parser.add_argument('--width-factor',type=int,default=10,help='WRN width factor')
 parser.add_argument('--drop-rate',type=float,default=0.0, help='WRN drop rate')
@@ -90,8 +91,8 @@ if args.net == "smallcnn":
     model = SmallCNN().cuda()
     net = "smallcnn"
 if args.net == "resnet18":
-    if args.advcl:
-        bn_names = ['normal']
+    if args.multibn:
+        bn_names = ['normal', 'pgd', 'pgd_ce']
         model = ResNet18_multibn(bn_names=bn_names)
         model = model.cuda()
         net = "resnet18_multibn"
@@ -188,7 +189,10 @@ def train(epoch, model, train_loader, optimizer):
         
         # Get adversarial data
         if args.advcl:
-            x_adv, x_adv_cl = attack.advcl_PGD_singlebn(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True ) 
+            if args.multibn:
+                x_adv, x_adv_cl = attack.advcl_PGD(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True )
+            else:
+                x_adv, x_adv_cl = attack.advcl_PGD_singlebn(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True ) 
         else:
             x_adv = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
 
