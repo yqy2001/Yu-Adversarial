@@ -314,6 +314,8 @@ else:
 ## Training get started
 test_nat_acc = 0
 test_pgd20_acc = 0
+best_nat = [0, 0]
+best_pgd20 = [0, 0]
 
 for epoch in range(start_epoch, args.epochs):
    
@@ -327,6 +329,13 @@ for epoch in range(start_epoch, args.epochs):
     else:
         _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
 
+    if test_nat_acc >= best_nat[0]:
+        best_nat[0] = test_nat_acc
+        best_nat[1] = test_pgd20_acc
+    
+    if test_pgd20_acc >= best_pgd20[1]:
+        best_pgd20[0] = test_nat_acc
+        best_pgd20[1] = test_pgd20_acc
 
     print(
         'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
@@ -358,5 +367,7 @@ for epoch in range(start_epoch, args.epochs):
                 'test_pgd20_acc': test_pgd20_acc,
                 'optimizer' : optimizer.state_dict(),
             })
-    
+
+logger_test.append(["best nat acc pairs", best_nat[0], best_nat[1]])
+logger_test.append(["best pgd20 acc pairs", best_pgd20[0], best_pgd20[1]])
 logger_test.close()

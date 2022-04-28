@@ -91,7 +91,7 @@ if args.net == "smallcnn":
     net = "smallcnn"
 if args.net == "resnet18":
     if args.advcl:
-        bn_names = ['normal', 'pgd', 'pgd_ce']
+        bn_names = ['normal']
         model = ResNet18_multibn(bn_names=bn_names)
         model = model.cuda()
         net = "resnet18_multibn"
@@ -188,7 +188,7 @@ def train(epoch, model, train_loader, optimizer):
         
         # Get adversarial data
         if args.advcl:
-            x_adv, x_adv_cl = attack.advcl_PGD(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True ) 
+            x_adv, x_adv_cl = attack.advcl_PGD_singlebn(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True ) 
         else:
             x_adv = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
 
@@ -204,10 +204,7 @@ def train(epoch, model, train_loader, optimizer):
         optimizer.param_groups[0].update(lr=lr)
         optimizer.zero_grad()
         
-        if args.advcl:
-            logit = model(x_adv, bn_name='pgd_ce')
-        else:
-            logit = model(x_adv)
+        logit = model(x_adv)
 
         p_adv_y = None
         if args.acc_aware: 
@@ -227,9 +224,9 @@ def train(epoch, model, train_loader, optimizer):
             loss = nn.CrossEntropyLoss(reduce="mean")(logit, target)
         
         if args.advcl:
-            f1_proj, f1_logits = model(data1, bn_name='normal', contrast=True)
-            f2_proj, f2_logits = model(data2, bn_name='normal', contrast=True)
-            fcl_proj, fcl_logits = model(x_adv_cl, bn_name='pgd', contrast=True)
+            f1_proj, f1_logits = model(data1, contrast=True)
+            f2_proj, f2_logits = model(data2, contrast=True)
+            fcl_proj, fcl_logits = model(x_adv_cl, contrast=True)
             features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
 
             criterion_cl = SupConLoss(temperature=0.5)
@@ -314,6 +311,8 @@ else:
 ## Training get started
 test_nat_acc = 0
 test_pgd20_acc = 0
+best_nat = [0, 0]
+best_pgd20 = [0, 0]
 
 for epoch in range(start_epoch, args.epochs):
    
@@ -322,11 +321,15 @@ for epoch in range(start_epoch, args.epochs):
 
     # Evalutions similar to DAT.
     _, test_nat_acc = attack.eval_clean(model, test_loader)
-    if args.advcl:
-        _, test_pgd20_acc = attack.eval_robust_multibn(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
-    else:
-        _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+    _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
 
+    if test_nat_acc >= best_nat[0]:
+        best_nat[0] = test_nat_acc
+        best_nat[1] = test_pgd20_acc
+    
+    if test_pgd20_acc >= best_pgd20[1]:
+        best_pgd20[0] = test_nat_acc
+        best_pgd20[1] = test_pgd20_acc
 
     print(
         'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
@@ -358,5 +361,7 @@ for epoch in range(start_epoch, args.epochs):
                 'test_pgd20_acc': test_pgd20_acc,
                 'optimizer' : optimizer.state_dict(),
             })
-    
+
+logger_test.append(["best nat acc pairs", best_nat[0], best_nat[1]])
+logger_test.append(["best pgd20 acc pairs", best_pgd20[0], best_pgd20[1]])
 logger_test.close()
