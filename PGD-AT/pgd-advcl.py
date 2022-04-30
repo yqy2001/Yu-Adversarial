@@ -59,6 +59,7 @@ parser.add_argument('--out-dir',type=str,default='./GAIRAT_result',help='dir of 
 # advcl settings
 parser.add_argument('--advcl',action='store_true', default=False,help='whether to use advcl as regulation')
 parser.add_argument('--advcl_weight', default=1.0, type=float)
+parser.add_argument('--stpg',action='store_true', default=False, help='stpg clean in cl loss')
 
 # acc_aware
 parser.add_argument('--acc_aware', action='store_true',
@@ -239,7 +240,7 @@ def train(epoch, model, train_loader, optimizer):
             features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
 
             criterion_cl = SupConLoss(temperature=0.5)
-            cl_loss = criterion_cl(features, alpha=p_adv_y)
+            cl_loss = criterion_cl(features, alpha=p_adv_y, stpg=args.stpg)
 
             loss = loss + args.advcl_weight*cl_loss
 

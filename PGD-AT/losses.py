@@ -14,7 +14,7 @@ class SupConLoss(nn.Module):
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
 
-    def forward(self, features, labels=None, mask=None, alpha=None):
+    def forward(self, features, labels=None, mask=None, alpha=None, stpg=False):
         """Compute loss for model. If both `labels` and `mask` are None,
         it degenerates to SimCLR unsupervised loss:
         https://arxiv.org/pdf/2002.05709.pdf
@@ -52,6 +52,7 @@ class SupConLoss(nn.Module):
 
         contrast_count = features.shape[1]
         contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
+
         if self.contrast_mode == 'one':
             anchor_feature = features[:, 0]
             anchor_count = 1
@@ -65,6 +66,15 @@ class SupConLoss(nn.Module):
         anchor_dot_contrast = torch.div(
             torch.matmul(anchor_feature, contrast_feature.T),
             self.temperature)
+
+        if stpg: # stop clean grad during contrast between clean & adv
+            contrast_feature_stpg = torch.cat(torch.unbind(features.detach(), dim=1), dim=0)
+            anchor_dot_contrast_stpg = torch.div(
+                torch.matmul(anchor_feature, contrast_feature_stpg.T),
+                self.temperature)
+            anchor_dot_contrast[0:batch_size, batch_size:] = anchor_dot_contrast_stpg[0:batch_size, batch_size:]
+            anchor_dot_contrast[batch_size:, 0:batch_size] = anchor_dot_contrast_stpg[0:batch_size, batch_size:].T
+        
         # for numerical stability
         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
         logits = anchor_dot_contrast - logits_max.detach()
