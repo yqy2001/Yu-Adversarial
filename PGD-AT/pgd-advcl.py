@@ -40,6 +40,8 @@ parser.add_argument('--num-steps', type=int, default=10, help='maximum perturbat
 parser.add_argument('--step-size', type=float, default=0.007, help='step size')
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed')
 parser.add_argument('--random',type=bool,default=True,help="whether to initiat adversarial sample with random noise")
+parser.add_argument('--only_x_ce', action='store_true',
+                    help='only generate x_ce(without x_cl) to compute ce&cl loss')
 
 # model
 parser.add_argument('--net', type=str, default="WRN",help="decide which network to use,choose from smallcnn,resnet18,WRN")
@@ -108,7 +110,7 @@ if args.net == "WRN":
 
 if torch.cuda.device_count() > 1:
     print("=====> Let's use", torch.cuda.device_count(), "GPUs!")
-    model = apex.parallel.convert_syncbn_model(model)
+    # model = apex.parallel.convert_syncbn_model(model)
     model = nn.DataParallel(model)
     model = model.cuda()
     cudnn.benchmark = True
@@ -188,7 +190,7 @@ def train(epoch, model, train_loader, optimizer):
         data1, data2, data, target = data1.cuda(non_blocking=True), data2.cuda(non_blocking=True), data.cuda(non_blocking=True), target.cuda(non_blocking=True)
         
         # Get adversarial data
-        if args.advcl:
+        if args.advcl and not args.only_x_ce:
             if args.multibn:
                 x_adv, x_adv_cl = attack.advcl_PGD(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True )
             else:
@@ -230,7 +232,10 @@ def train(epoch, model, train_loader, optimizer):
         if args.advcl:
             f1_proj, f1_logits = model(data1, contrast=True)
             f2_proj, f2_logits = model(data2, contrast=True)
-            fcl_proj, fcl_logits = model(x_adv_cl, contrast=True)
+            if args.only_x_ce:
+                fcl_proj, fcl_logits = model(x_adv, contrast=True)
+            else:
+                fcl_proj, fcl_logits = model(x_adv_cl, contrast=True)
             features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
 
             criterion_cl = SupConLoss(temperature=0.5)
@@ -366,6 +371,6 @@ for epoch in range(start_epoch, args.epochs):
                 'optimizer' : optimizer.state_dict(),
             })
 
-logger_test.append(["best nat acc pairs", best_nat[0], best_nat[1]])
-logger_test.append(["best pgd20 acc pairs", best_pgd20[0], best_pgd20[1]])
+logger_test.write("best nat acc pairs", [best_nat[0], best_nat[1]])
+logger_test.write("best pgd20 acc pairs", [best_pgd20[0], best_pgd20[1]])
 logger_test.close()
