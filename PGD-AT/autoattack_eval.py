@@ -9,7 +9,8 @@ import torchvision.transforms as transforms
 from models import *
 # from models.resnet_cifar import ResNet18 as ResNet18_multibn
 from models.resnet_cifar_multibn import resnet18 as ResNet18_multibn
-from utils.utils import load_BN_checkpoint
+from utils.utils import load_BN_checkpoint, load_BN_checkpoint_ce
+from functools import partial
 
 import sys
 sys.path.insert(0, '..')
@@ -26,7 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_ex', type=int, default=10000)
     parser.add_argument('--individual', action='store_true')
     parser.add_argument('--save_dir', type=str, default='./results')
-    parser.add_argument('--batch_size', type=int, default=500)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--log_path', type=str, default='./log_file.txt')
     parser.add_argument('--version', type=str, default='standard')
     
@@ -39,6 +40,7 @@ if __name__ == '__main__':
     elif args.model_type == "resnet18_multibn":
         bn_names = ['normal', 'pgd', 'pgd_ce']
         model = ResNet18_multibn(bn_names=bn_names)
+        # model = ResNet18_multibn()
         model = model.cuda()
         
     # elif args.model_type == "WideResNet":
@@ -46,17 +48,24 @@ if __name__ == '__main__':
     
     model = nn.DataParallel(model)
     ckpt = torch.load(args.model)
-    # if args.model_type == "resnet18_multibn":
-    #     state_dict = ckpt['state_dict']
-    #     state_dict, _ = load_BN_checkpoint(state_dict)
-    #     model.load_state_dict(state_dict, strict=False)
-    #     model.load_state_dict(state_dict)
-    # else:
-    #     model.load_state_dict(ckpt['state_dict'])
-    model.load_state_dict(ckpt['state_dict'])
+    if args.model_type == "resnet18_multibn":
+        state_dict = ckpt['state_dict']
+        # new_state_dict, state_dict_normal = load_BN_checkpoint(state_dict)
+        # new_state_dict, state_dict_normal = load_BN_checkpoint_ce(state_dict)
+        model_dict = model.state_dict()
+        # new_state_dict = load_pretrain_checkpoint2finetune(model_dict, state_dict)
+        # new_model_dict = load_supcon_checkpoint2finetune(model_dict, state_dict)
+        model.load_state_dict(state_dict, strict=False)
+    else:
+        model.load_state_dict(ckpt['state_dict'], strict=False)
+    # model.load_state_dict(ckpt['state_dict'])
 
     model.cuda()
     model.eval()
+    
+    if args.model_type == "resnet18_multibn":
+        model = partial(model, bn_name="pgd_ce")
+
     '''
     model = ResNet18()
     ckpt = torch.load(args.model)
