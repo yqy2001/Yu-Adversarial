@@ -8,13 +8,14 @@ class SupConLoss(nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
     def __init__(self, temperature=0.07, contrast_mode='all',
-                 base_temperature=0.07):
+                 base_temperature=0.07, args=None):
         super(SupConLoss, self).__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
+        self.args = args
 
-    def forward(self, features, labels=None, mask=None, alpha=None, stpg=False):
+    def forward(self, features, labels=None, mask=None, alpha=None):
         """Compute loss for model. If both `labels` and `mask` are None,
         it degenerates to SimCLR unsupervised loss:
         https://arxiv.org/pdf/2002.05709.pdf
@@ -31,6 +32,8 @@ class SupConLoss(nn.Module):
                   if features.is_cuda
                   else torch.device('cpu'))
 
+        stpg = self.args.stpg
+        
         if len(features.shape) < 3:
             raise ValueError('`features` needs to be [bsz, n_views, ...],'
                              'at least 3 dimensions are required')
@@ -38,17 +41,19 @@ class SupConLoss(nn.Module):
             features = features.view(features.shape[0], features.shape[1], -1)
 
         batch_size = features.shape[0]
-        if labels is not None and mask is not None:
-            raise ValueError('Cannot define both `labels` and `mask`')
-        elif labels is None and mask is None:
-            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
-        elif labels is not None:
-            labels = labels.contiguous().view(-1, 1)
-            if labels.shape[0] != batch_size:
-                raise ValueError('Num of labels does not match num of features')
-            mask = torch.eq(labels, labels.T).float().to(device)
-        else:
-            mask = mask.float().to(device)
+
+        # if labels is not None and mask is not None:
+        #     raise ValueError('Cannot define both `labels` and `mask`')
+        # elif labels is None and mask is None:
+        #     mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+        # elif labels is not None:
+        #     labels = labels.contiguous().view(-1, 1)
+        #     if labels.shape[0] != batch_size:
+        #         raise ValueError('Num of labels does not match num of features')
+        #     mask = torch.eq(labels, labels.T).float().to(device)
+        # else:
+        #     mask = mask.float().to(device)
+        mask = torch.eye(batch_size, dtype=torch.float32).to(device)
 
         contrast_count = features.shape[1]
         contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
@@ -66,7 +71,7 @@ class SupConLoss(nn.Module):
         anchor_dot_contrast = torch.div(
             torch.matmul(anchor_feature, contrast_feature.T),
             self.temperature)
-
+        
         if stpg: # stop clean grad during contrast between clean & adv
             contrast_feature_stpg = torch.cat(torch.unbind(features.detach(), dim=1), dim=0)
             anchor_dot_contrast_stpg = torch.div(
@@ -89,6 +94,26 @@ class SupConLoss(nn.Module):
             0
         )
         mask = mask * logits_mask
+
+        if labels is None:
+            pass
+        else:
+            if self.args.supcl_clean or self.args.supcl_adv:
+                labels = labels.contiguous().view(-1, 1)
+                if labels.shape[0] != batch_size:
+                    raise ValueError('Num of labels does not match num of features')
+                mask_sup = torch.eq(labels, labels.T).float().to(device)
+                # tile mask
+                mask_sup = mask_sup.repeat(anchor_count, contrast_count)
+                # mask-out self-contrast cases
+                mask_sup = mask_sup * logits_mask
+            
+            if self.args.supcl_clean:
+                mask[batch_size:, batch_size:] = mask_sup[batch_size:, batch_size:]
+            
+            if self.args.supcl_adv:
+                mask[batch_size:, 0:batch_size] = mask_sup[batch_size:, 0:batch_size]
+                mask[0:batch_size, batch_size:] = mask_sup[0:batch_size, batch_size:]
 
         # compute log_prob
         exp_logits = torch.exp(logits) * logits_mask

@@ -60,6 +60,8 @@ parser.add_argument('--out-dir',type=str,default='./GAIRAT_result',help='dir of 
 parser.add_argument('--advcl',action='store_true', default=False,help='whether to use advcl as regulation')
 parser.add_argument('--advcl_weight', default=1.0, type=float)
 parser.add_argument('--stpg',action='store_true', default=False, help='stpg clean in cl loss')
+parser.add_argument('--supcl_clean',action='store_true', default=False, help='use supcon in contrast clean pairs')
+parser.add_argument('--supcl_adv',action='store_true', default=False, help='use supcon in contrast clean&adv pairs')
 
 # acc_aware
 parser.add_argument('--acc_aware', action='store_true',
@@ -193,9 +195,9 @@ def train(epoch, model, train_loader, optimizer):
         # Get adversarial data
         if args.advcl and not args.only_x_ce:
             if args.multibn:
-                x_adv, x_adv_cl = attack.advcl_PGD(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True )
+                x_adv, x_adv_cl = attack.advcl_PGD(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True, args=args )
             else:
-                x_adv, x_adv_cl = attack.advcl_PGD_singlebn(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True ) 
+                x_adv, x_adv_cl = attack.advcl_PGD_singlebn(model,(data1, data2, data), target, args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True, args=args ) 
         else:
             x_adv = attack.GA_PGD(model,data,target,args.epsilon,args.step_size,args.num_steps,loss_fn="cent",category="Madry",rand_init=True)
 
@@ -239,8 +241,8 @@ def train(epoch, model, train_loader, optimizer):
                 fcl_proj, fcl_logits = model(x_adv_cl, contrast=True)
             features = torch.cat([fcl_proj.unsqueeze(1), f1_proj.unsqueeze(1), f2_proj.unsqueeze(1)], dim=1)
 
-            criterion_cl = SupConLoss(temperature=0.5)
-            cl_loss = criterion_cl(features, alpha=p_adv_y, stpg=args.stpg)
+            criterion_cl = SupConLoss(temperature=0.5, args=args)
+            cl_loss = criterion_cl(features, labels=target, alpha=p_adv_y)
 
             loss = loss + args.advcl_weight*cl_loss
 
