@@ -18,9 +18,9 @@ import logging
 def pgd(model,
         X,
         y,
-        epsilon=8 / 255,
+        epsilon=8./255,
         num_steps=20,
-        step_size=0.01,
+        step_size=2./255,
         random_start=True):
     out = model(X)
     is_correct_natural = (out.max(1)[1] == y).float().cpu().numpy()
