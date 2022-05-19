@@ -2,10 +2,12 @@ import os
 import argparse
 import torchvision
 import torch.optim as optim
+from torch.optim import lr_scheduler
 from torchvision import transforms
 import torch.backends.cudnn as cudnn
 
 import apex
+from torchvision.datasets import CIFAR10, CIFAR100, SVHN, MNIST
 
 from models import *
 from models.resnet_cifar_multibn import resnet18 as ResNet18_multibn
@@ -44,7 +46,7 @@ parser.add_argument('--only_x_ce', action='store_true',
                     help='only generate x_ce(without x_cl) to compute ce&cl loss')
 
 # model
-parser.add_argument('--net', type=str, default="WRN",help="decide which network to use,choose from smallcnn,resnet18,WRN")
+parser.add_argument('--model', type=str, default="WRN",help="decide which network to use,choose from resnet18,WRN")
 parser.add_argument('--multibn', action='store_true', default=False)
 parser.add_argument('--depth',type=int,default=32,help='WRN depth')
 parser.add_argument('--width-factor',type=int,default=10,help='WRN width factor')
@@ -76,52 +78,18 @@ parser.add_argument('--temp_cl', type=float, default=10.0,
 args = parser.parse_args()
 
 # Training settings
-seed = args.seed
-momentum = args.momentum
-weight_decay = args.weight_decay
 depth = args.depth
 width_factor = args.width_factor
 drop_rate = args.drop_rate
 resume = args.resume
 out_dir = args.out_dir
 
-torch.manual_seed(seed)
-np.random.seed(seed)
-torch.cuda.manual_seed_all(seed)
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = True
 
-# Models and optimizer
-if args.net == "smallcnn":
-    model = SmallCNN().cuda()
-    net = "smallcnn"
-if args.net == "resnet18":
-    if args.multibn:
-        bn_names = ['normal', 'pgd', 'pgd_ce']
-        model = ResNet18_multibn(bn_names=bn_names)
-        model = model.cuda()
-        net = "resnet18_multibn"
-    else:
-        model = ResNet18().cuda()
-        net = "resnet18"
-if args.net == "preactresnet18":
-    model = PreActResNet18().cuda()
-    net = "preactresnet18"
-if args.net == "WRN":
-    model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate).cuda()
-    net = "WRN{}-{}-dropout{}".format(depth,width_factor,drop_rate)
-
-if torch.cuda.device_count() > 1:
-    print("=====> Let's use", torch.cuda.device_count(), "GPUs!")
-    # model = apex.parallel.convert_syncbn_model(model)
-    model = nn.DataParallel(model)
-    model = model.cuda()
-    cudnn.benchmark = True
-else:
-    print('single gpu version is not supported, please use multiple GPUs!')
-    raise NotImplementedError
-# model = torch.nn.DataParallel(model)
-optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=momentum, weight_decay=weight_decay)
 
 # Learning schedules
 if args.lr_schedule == 'superconverge':
@@ -160,15 +128,6 @@ elif args.lr_schedule == 'multipledecay':
 elif args.lr_schedule == 'cosine': 
     def lr_schedule(t): 
         return args.lr_max * 0.5 * (1 + np.cos(t / args.epochs * np.pi))
-
-    # if args.batch_size > 256:
-    #     args.warm = True
-    # if args.warm:
-    #     args.warmup_from = 0.01
-    #     args.warm_epochs = 10
-    #     eta_min = args.lr_max * (args.lr_decay_rate ** 3)
-    #     args.warmup_to = eta_min + (args.lr_max - eta_min) * (
-    #             1 + math.cos(math.pi * args.warm_epochs / args.epochs)) / 2
 
 # Store path
 if not os.path.exists(out_dir):
@@ -262,8 +221,9 @@ def train(epoch, model, train_loader, optimizer):
 
     return train_robust_loss, lr
 
+
 # Setup data loader
-transform_train = transforms.Compose([
+transform_strong = transforms.Compose([
     transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
     transforms.RandomHorizontalFlip(),
     transforms.RandomApply([
@@ -272,108 +232,136 @@ transform_train = transforms.Compose([
     transforms.RandomGrayscale(p=0.2),
     transforms.ToTensor(),
 ])
-train_transform_org = transforms.Compose([
+transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
 ])
-transform_train = TwoCropTransformAdv(transform_train, train_transform_org)
+transform_train_two = TwoCropTransformAdv(transform_strong, transform_train)
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
 ])
 
 if args.dataset == "cifar10":
-    trainset = torchvision.datasets.CIFAR10(root='~/data/', train=True, download=True, transform=transform_train)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=8)
-    testset = torchvision.datasets.CIFAR10(root='~/data/', train=False, download=True, transform=transform_test)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=8)
-if args.dataset == "svhn":
-    trainset = torchvision.datasets.SVHN(root='~/data/', split='train', download=True, transform=transform_train)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2)
-    testset = torchvision.datasets.SVHN(root='~/data/', split='test', download=True, transform=transform_test)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=2)
-if args.dataset == "mnist":
-    trainset = torchvision.datasets.MNIST(root='~/data/', train=True, download=True, transform=transforms.ToTensor())
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=1,pin_memory=True)
-    testset = torchvision.datasets.MNIST(root='~/data/', train=False, download=True, transform=transforms.ToTensor())
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=1,pin_memory=True)
-
-# Resume 
-title = 'PGD-AT'
-best_acc = 0
-start_epoch = 0
-if resume:
-    # Resume directly point to checkpoint.pth.tar
-    print ('==> PGD-AT Resuming from checkpoint ..')
-    print(resume)
-    assert os.path.isfile(resume)
-    out_dir = os.path.dirname(resume)
-    checkpoint = torch.load(resume)
-    start_epoch = checkpoint['epoch']
-    best_acc = checkpoint['test_pgd20_acc']
-    model.load_state_dict(checkpoint['state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title, resume=True)
+    trainset = CIFAR10(root='~/data/', train=True, download=True, transform=transform_train)
+    testset = CIFAR10(root='~/data/', train=False, download=True, transform=transform_test)
+elif args.dataset == 'cifar100':
+    trainset = CIFAR100(root='~/data', train=True, download=True, transform=transform_train)
+    testset = CIFAR100(root='~/data', train=False, download=True, transform=transform_test)
+elif args.dataset == "svhn":
+    trainset = SVHN(root='~/data/', split='train', download=True, transform=transform_train)
+    testset = SVHN(root='~/data/', split='test', download=True, transform=transform_test)
+elif args.dataset == "mnist":
+    trainset = MNIST(root='~/data/', train=True, download=True, transform=transforms.ToTensor())
+    testset = MNIST(root='~/data/', train=False, download=True, transform=transforms.ToTensor())
 else:
-    print('==> PGD-AT')
-    logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title)
-    logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD20 Acc'])
+    raise NotImplementedError
 
-## Training get started
-test_nat_acc = 0
-test_pgd20_acc = 0
-best_nat = [0, 0]
-best_pgd20 = [0, 0]
+train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=8)
 
-for epoch in range(start_epoch, args.epochs):
-   
-    # Adversarial training
-    train_robust_loss, lr = train(epoch, model, train_loader, optimizer)
 
-    # Evalutions similar to DAT.
-    _, test_nat_acc = attack.eval_clean(model, test_loader)
-    _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+def main():
+    # Models and optimizer
+    if args.model == "resnet18":
+        if args.multibn:
+            bn_names = ['normal', 'pgd', 'pgd_ce']
+            model = ResNet18_multibn(bn_names=bn_names)
+        else:
+            model = ResNet18()
+    elif args.model == "preactresnet18":
+        model = PreActResNet18()
+    elif args.model == "WRN":
+        model = Wide_ResNet_Madry(depth=depth, num_classes=10, widen_factor=width_factor, dropRate=drop_rate)
 
-    if test_nat_acc >= best_nat[0]:
-        best_nat[0] = test_nat_acc
-        best_nat[1] = test_pgd20_acc
-    
-    if test_pgd20_acc >= best_pgd20[1]:
-        best_pgd20[0] = test_nat_acc
-        best_pgd20[1] = test_pgd20_acc
+    print("=====> Let's use", torch.cuda.device_count(), "GPUs!")
+    model = nn.DataParallel(model).cuda()
 
-    print(
-        'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
-        epoch,
-        args.epochs,
-        lr,
-        test_nat_acc,
-        test_pgd20_acc)
-        )
-         
-    logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
-    
-    # Save the best checkpoint
-    if test_pgd20_acc > best_acc:
-        best_acc = test_pgd20_acc
+    optimizer = optim.SGD(model.parameters(), lr=args.lr_max, momentum=args.momentum, weight_decay=args.weight_decay)
+
+    if args.lr_policy == 'step':
+        scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
+    elif args.lr_policy == 'cosine':
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    else:
+        raise NotImplementedError
+
+    # Resume
+    title = 'PGD-AT'
+    best_acc = 0
+    start_epoch = 0
+    if resume:
+        # Resume directly point to checkpoint.pth.tar
+        print ('==> PGD-AT Resuming from checkpoint ..')
+        print(resume)
+        assert os.path.isfile(resume)
+        out_dir = os.path.dirname(resume)
+        checkpoint = torch.load(resume)
+        start_epoch = checkpoint['epoch']
+        best_acc = checkpoint['test_pgd20_acc']
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title, resume=True)
+    else:
+        print('==> PGD-AT')
+        logger_test = Logger(os.path.join(out_dir, 'log_results.txt'), title=title)
+        logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD20 Acc'])
+
+    ## Training get started
+    test_nat_acc = 0
+    test_pgd20_acc = 0
+    best_nat = [0, 0]
+    best_pgd20 = [0, 0]
+
+    for epoch in range(start_epoch, args.epochs):
+
+        # Adversarial training
+        train_robust_loss, lr = train(epoch, model, train_loader, optimizer)
+
+        # Evalutions similar to DAT.
+        _, test_nat_acc = attack.eval_clean(model, test_loader)
+        _, test_pgd20_acc = attack.eval_robust(model, test_loader, perturb_steps=20, epsilon=0.031, step_size=0.031 / 4,loss_fn="cent", category="Madry", random=True)
+
+        if test_nat_acc >= best_nat[0]:
+            best_nat[0] = test_nat_acc
+            best_nat[1] = test_pgd20_acc
+
+        if test_pgd20_acc >= best_pgd20[1]:
+            best_pgd20[0] = test_nat_acc
+            best_pgd20[1] = test_pgd20_acc
+
+        print(
+            'Epoch: [%d | %d] | Learning Rate: %f | Natural Test Acc %.2f | PGD20 Test Acc %.2f |\n' % (
+            epoch,
+            args.epochs,
+            lr,
+            test_nat_acc,
+            test_pgd20_acc)
+            )
+
+        logger_test.append([epoch + 1, test_nat_acc, test_pgd20_acc])
+
+        # Save the best checkpoint
+        if test_pgd20_acc > best_acc:
+            best_acc = test_pgd20_acc
+            save_checkpoint({
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'test_nat_acc': test_nat_acc,
+                    'test_pgd20_acc': test_pgd20_acc,
+                    'optimizer' : optimizer.state_dict(),
+                },filename='bestpoint.pth.tar')
+
+        # Save the last checkpoint
         save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'test_nat_acc': test_nat_acc, 
-                'test_pgd20_acc': test_pgd20_acc,
-                'optimizer' : optimizer.state_dict(),
-            },filename='bestpoint.pth.tar')
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'test_nat_acc': test_nat_acc,
+                    'test_pgd20_acc': test_pgd20_acc,
+                    'optimizer' : optimizer.state_dict(),
+                })
 
-    # Save the last checkpoint
-    save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'test_nat_acc': test_nat_acc, 
-                'test_pgd20_acc': test_pgd20_acc,
-                'optimizer' : optimizer.state_dict(),
-            })
-
-logger_test.write("best nat acc pairs", [best_nat[0], best_nat[1]])
-logger_test.write("best pgd20 acc pairs", [best_pgd20[0], best_pgd20[1]])
-logger_test.close()
+    logger_test.write("best nat acc pairs", [best_nat[0], best_nat[1]])
+    logger_test.write("best pgd20 acc pairs", [best_pgd20[0], best_pgd20[1]])
+    logger_test.close()

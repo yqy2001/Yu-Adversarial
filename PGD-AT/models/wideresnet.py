@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
+
 
 class BasicBlock(nn.Module):
     def __init__(self, in_planes, out_planes, stride, dropRate=0.0):
@@ -47,9 +47,9 @@ class NetworkBlock(nn.Module):
         return self.layer(x)
 
 
-class Wide_ResNet(nn.Module):
-    def __init__(self, depth=34, num_classes=10, widen_factor=10, dropRate=0):
-        super(Wide_ResNet, self).__init__()
+class WideResNet(nn.Module):
+    def __init__(self, depth=34, num_classes=10, widen_factor=10, dropRate=0.0):
+        super(WideResNet, self).__init__()
         nChannels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
         assert ((depth - 4) % 6 == 0)
         n = (depth - 4) / 6
@@ -60,7 +60,7 @@ class Wide_ResNet(nn.Module):
         # 1st block
         self.block1 = NetworkBlock(n, nChannels[0], nChannels[1], block, 1, dropRate)
         # 1st sub-block
-        self.sub_block1 = NetworkBlock(n, nChannels[0], nChannels[1], block, 1, dropRate)
+        # self.sub_block1 = NetworkBlock(n, nChannels[0], nChannels[1], block, 1, dropRate)
         # 2nd block
         self.block2 = NetworkBlock(n, nChannels[1], nChannels[2], block, 2, dropRate)
         # 3rd block
@@ -81,7 +81,7 @@ class Wide_ResNet(nn.Module):
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
 
-    def forward(self, x):
+    def forward(self, x, return_feature=False):
         out = self.conv1(x)
         out = self.block1(out)
         out = self.block2(out)
@@ -89,10 +89,7 @@ class Wide_ResNet(nn.Module):
         out = self.relu(self.bn1(out))
         out = F.avg_pool2d(out, 8)
         out = out.view(-1, self.nChannels)
-        return self.fc(out)
-def test():
-    net = Wide_ResNet()
-    y = net(Variable(torch.randn(1, 3, 32, 32)))
-    #print(y.size())
-    print(net)
-# test()
+        if return_feature:
+            return self.fc(out), out
+        else:
+            return self.fc(out)
